@@ -11,6 +11,8 @@ import pandas as pd
 
 from reaction_kinetics.alignment import build_electrochem_trace
 from reaction_kinetics.config import (
+    BOUNDARY_ANALYSIS_EXCLUDE_IDS,
+    BOUNDARY_FIT_SOC_GRID_SIZE,
     DEFAULT_ERODE_BOUNDARY_PX,
     DEFAULT_SMOOTH_WINDOW,
     FIGURES_DIR,
@@ -18,8 +20,10 @@ from reaction_kinetics.config import (
     get_data_root,
     get_output_root,
     INTERMEDIATE_DIR,
+    PARTICLE_IDS_INCLUDE,
     TABLES_DIR,
 )
+from reaction_kinetics.segments import compute_cycle_segment_labels
 from reaction_kinetics.descriptive import compute_descriptive_summary
 from reaction_kinetics.geometry import build_particle_geometry
 from reaction_kinetics.io import load_a1g_movie
@@ -118,6 +122,7 @@ def run(
     smooth_window: Optional[int] = DEFAULT_SMOOTH_WINDOW,
     erode_boundary_px: int = DEFAULT_ERODE_BOUNDARY_PX,
     crop_pad: int = 1,
+    particle_ids_include: Optional[List[int]] = None,
 ) -> DescriptiveSummary:
     """
     Full pipeline: load data, build SOC movie, save full-field artifact, load masks,
@@ -139,9 +144,13 @@ def run(
 
     # Alignment
     trace = build_electrochem_trace(data_root, timesteps)
+    segment_label_t = compute_cycle_segment_labels(trace.drive_sign)
 
-    # Particles
+    # Particles (optionally filter to PARTICLE_IDS_INCLUDE or particle_ids_include)
     particle_ids = discover_particle_ids(data_root)
+    filter_ids = particle_ids_include if particle_ids_include is not None else PARTICLE_IDS_INCLUDE
+    if filter_ids is not None:
+        particle_ids = sorted([p for p in particle_ids if p in filter_ids])
     if not particle_ids:
         return DescriptiveSummary(per_particle=[], global_metrics={})
 
@@ -169,6 +178,7 @@ def run(
             crop_pad=crop_pad,
             erode_boundary_px=erode_boundary_px,
         )
+        ep.metadata["segment_label_t"] = segment_label_t
         episodes.append(ep)
         valid_both = ep.valid_mask_tyx[:-1] & ep.valid_mask_tyx[1:]  # T-1
         rate_maps_list.append(
@@ -208,15 +218,133 @@ def run(
         summary.figure_paths = summary.figure_paths or []
         pass  # plotting optional; continue to tables
 
-    # Tables and pixel_observations
     out_tables = output_root / TABLES_DIR
     out_tables.mkdir(parents=True, exist_ok=True)
+
+    # Boundary-only kinetics (particles 2, 4, 5, 6, 7)
+    try:
+        bfig_paths, btab_paths = _run_boundary_only_analysis(
+            episodes, rate_maps_list, out_figures, out_tables
+        )
+        summary.figure_paths = list(summary.figure_paths) + bfig_paths
+        summary.table_paths = list(summary.table_paths) + btab_paths
+    except Exception:
+        pass
+
+    # Voltage–SOC proxy validation (retained particles only)
+    try:
+        from reaction_kinetics.voltage_soc_validation import run_voltage_soc_validation
+        vfig_paths, vtab_paths = run_voltage_soc_validation(
+            episodes, summary, out_figures, out_tables, BOUNDARY_ANALYSIS_EXCLUDE_IDS
+        )
+        summary.figure_paths = list(summary.figure_paths) + vfig_paths
+        summary.table_paths = list(summary.table_paths) + vtab_paths
+    except Exception:
+        pass
+
     table_paths = _save_tables(
         episodes, rate_maps_list, summary, out_tables
     )
-    summary.table_paths = table_paths
+    summary.table_paths = list(summary.table_paths) + table_paths
 
     return summary
+
+
+def _run_boundary_only_analysis(
+    episodes: List[ParticleEpisode],
+    rate_maps_list: List[RateMaps],
+    out_figures: Path,
+    out_tables: Path,
+) -> Tuple[List[str], List[str]]:
+    """Boundary-only kinetics for retained particles (exclude 1, 3, 8). Returns (figure_paths, table_paths)."""
+    from reaction_kinetics.boundary_kinetics import (
+        collect_boundary_only_kinetics,
+        collect_full_particle_pooled,
+        run_boundary_fits,
+    )
+    from reaction_kinetics.plotting import (
+        plot_boundary_only_dc_dt_vs_soc_per_particle,
+        plot_boundary_only_pooled,
+        plot_boundary_vs_full_fits,
+    )
+    exclude = BOUNDARY_ANALYSIS_EXCLUDE_IDS
+    per_particle, pooled_norm, pooled_raw = collect_boundary_only_kinetics(
+        episodes, rate_maps_list, exclude
+    )
+    if not per_particle:
+        return [], []
+    full_pooled = collect_full_particle_pooled(episodes, rate_maps_list, exclude)
+    soc_grid = np.linspace(0, 1, BOUNDARY_FIT_SOC_GRID_SIZE)
+    boundary_fits, full_fits, fit_quality = run_boundary_fits(
+        soc_grid, pooled_raw, full_pooled
+    )
+    fig_paths: List[str] = []
+    fig_paths.extend(
+        plot_boundary_only_dc_dt_vs_soc_per_particle(per_particle, out_figures)
+    )
+    fig_paths.extend(plot_boundary_only_pooled(pooled_norm, out_figures))
+    fig_paths.append(
+        plot_boundary_vs_full_fits(soc_grid, boundary_fits, full_fits, out_figures)
+    )
+    tab_paths = _save_boundary_tables(
+        per_particle, soc_grid, boundary_fits, full_fits, fit_quality, out_tables
+    )
+    return fig_paths, tab_paths
+
+
+def _save_boundary_tables(
+    per_particle: Dict[int, Any],
+    soc_grid: np.ndarray,
+    boundary_fits: Dict[str, Dict[str, np.ndarray]],
+    full_fits: Dict[str, Dict[str, np.ndarray]],
+    fit_quality: Dict[str, Dict[str, float]],
+    out_tables: Path,
+) -> List[str]:
+    """Write boundary_observations_summary.csv, boundary_fitted_curves.csv, boundary_fit_quality.csv."""
+    paths = []
+    rows = []
+    for pid, data in per_particle.items():
+        for seg in ("rising", "falling"):
+            n_obs = data["n_rising"] if seg == "rising" else data["n_falling"]
+            mean_rate = (
+                data["mean_abs_rate_rising"] if seg == "rising" else data["mean_abs_rate_falling"]
+            )
+            rows.append({
+                "particle_id": pid,
+                "segment": seg,
+                "n_observations": n_obs,
+                "mean_boundary_rate_magnitude": mean_rate,
+            })
+    if rows:
+        pd.DataFrame(rows).to_csv(out_tables / "boundary_observations_summary.csv", index=False)
+        paths.append(str(out_tables / "boundary_observations_summary.csv"))
+
+    curve_rows = []
+    for i, soc in enumerate(soc_grid):
+        for seg in ("rising", "falling"):
+            for rate_type in ("signed", "abs"):
+                bv = boundary_fits.get(seg, {}).get(rate_type)
+                fv = full_fits.get(seg, {}).get(rate_type)
+                curve_rows.append({
+                    "soc_grid": soc,
+                    "segment": seg,
+                    "rate_type": rate_type,
+                    "boundary_fitted_value": bv[i] if bv is not None and i < len(bv) else np.nan,
+                    "full_particle_fitted_value": fv[i] if fv is not None and i < len(fv) else np.nan,
+                })
+    if curve_rows:
+        pd.DataFrame(curve_rows).to_csv(out_tables / "boundary_fitted_curves.csv", index=False)
+        paths.append(str(out_tables / "boundary_fitted_curves.csv"))
+
+    quality_rows = []
+    for seg in ("rising", "falling"):
+        for rate_type in ("signed", "abs"):
+            q = fit_quality.get(seg, {}).get(rate_type, np.nan)
+            quality_rows.append({"segment": seg, "rate_type": rate_type, "variance_explained": q})
+    if quality_rows:
+        pd.DataFrame(quality_rows).to_csv(out_tables / "boundary_fit_quality.csv", index=False)
+        paths.append(str(out_tables / "boundary_fit_quality.csv"))
+    return paths
 
 
 def _save_tables(
@@ -243,6 +371,61 @@ def _save_tables(
         })
     pd.DataFrame(rows).to_csv(out_tables / "particle_summary.csv", index=False)
     paths.append(str(out_tables / "particle_summary.csv"))
+
+    # boundary_vs_interior_summary.csv
+    bvi_rows = []
+    for p in summary.per_particle:
+        bvi_rows.append({
+            "particle_id": p["particle_id"],
+            "mean_soc_boundary": p.get("mean_soc_boundary_global"),
+            "mean_soc_interior": p.get("mean_soc_interior_global"),
+            "mean_abs_rate_boundary": p.get("mean_abs_rate_boundary_global"),
+            "mean_abs_rate_interior": p.get("mean_abs_rate_interior_global"),
+        })
+    if bvi_rows:
+        pd.DataFrame(bvi_rows).to_csv(out_tables / "boundary_vs_interior_summary.csv", index=False)
+        paths.append(str(out_tables / "boundary_vs_interior_summary.csv"))
+
+    # segment_summary.csv
+    seg_rows = []
+    for p in summary.per_particle:
+        for seg_name in ("early_rising", "late_rising", "early_falling", "late_falling"):
+            sh = (p.get("segment_heterogeneity") or {}).get(seg_name)
+            sm = (p.get("segment_mean_abs_rate") or {}).get(seg_name)
+            sn = (p.get("segment_n_timesteps") or {}).get(seg_name)
+            seg_rows.append({
+                "particle_id": p["particle_id"],
+                "segment": seg_name,
+                "mean_std_soc": sh,
+                "mean_mean_abs_rate": sm,
+                "n_timesteps": sn,
+            })
+    if seg_rows:
+        pd.DataFrame(seg_rows).to_csv(out_tables / "segment_summary.csv", index=False)
+        paths.append(str(out_tables / "segment_summary.csv"))
+
+    # per_particle_diagnostics.csv
+    diag_rows = []
+    for p in summary.per_particle:
+        ri = p.get("mean_abs_rate_interior_global")
+        rb = p.get("mean_abs_rate_boundary_global")
+        if ri is not None and np.isfinite(ri) and ri > 0 and rb is not None and np.isfinite(rb):
+            ratio = float(rb) / float(ri)
+        else:
+            ratio = np.nan
+        diag_rows.append({
+            "particle_id": p["particle_id"],
+            "n_valid_pixels": p.get("union_area"),
+            "mean_conditional_soc_validity": p.get("mean_conditional_soc_validity"),
+            "mean_conditional_rate_validity": p.get("mean_conditional_rate_validity"),
+            "occupancy_fraction": p.get("mean_occupancy_fraction"),
+            "onset_soc_timestep": p.get("onset_soc_timestep"),
+            "peak_rate_timestep": p.get("peak_rate_timestep"),
+            "boundary_vs_interior_rate_ratio": ratio,
+        })
+    if diag_rows:
+        pd.DataFrame(diag_rows).to_csv(out_tables / "per_particle_diagnostics.csv", index=False)
+        paths.append(str(out_tables / "per_particle_diagnostics.csv"))
 
     # global_summary.csv
     gm = summary.global_metrics

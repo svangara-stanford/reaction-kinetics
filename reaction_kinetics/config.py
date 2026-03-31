@@ -1,7 +1,7 @@
 """Pipeline configuration: paths and processing defaults. No hardcoded absolute paths."""
 
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 
 def get_data_root(override: Optional[str] = None) -> Path:
@@ -33,9 +33,27 @@ DEFAULT_SPATIAL_SMOOTHING: bool = False
 
 # Onset metrics (two definitions)
 ONSET_SOC_DELTA_THRESHOLD: float = 0.05  # SOC-threshold-based: first t where mean SOC departs from initial by this
-# Rate-based onset: threshold = max(floor, fraction_of_max * max mean |dc/dt|) so it works when dc/dt ~ 1e-3
-ONSET_MEAN_ABSRATE_THRESHOLD: float = 1e-6  # floor to avoid noise-triggered onset
-ONSET_MEAN_ABSRATE_FRACTION_OF_MAX: float = 0.1  # first t where mean |dc/dt| >= this fraction of particle's max
+# Rate-based onset: particle baseline + smoothed rate + delta above baseline
+ONSET_RATE_BASELINE_N_FIRST: int = 10  # baseline = median/mean of first N mean_abs_rate_t
+ONSET_RATE_BASELINE_METHOD: str = "median"  # "median" or "mean"
+ONSET_RATE_SMOOTH_WINDOW: int = 5  # odd; Savitzky-Golay or rolling mean
+ONSET_RATE_DELTA_FRACTION: float = 0.2  # thresh = baseline + this * (max_smooth - baseline)
+
+# Persistent normalized rate: time-window correlation
+N_RATE_PERSISTENCE_WINDOWS: int = 4
+# Use one global symmetric color scale across all particles in the grid plot
+PERSISTENT_NORM_RATE_USE_GLOBAL_SCALE: bool = False
+
+# Boundary vs interior: interior = distance_to_boundary_px >= this (px)
+INTERIOR_THRESHOLD_PX: float = 1.0
+
+# Particle filter: None = use all discovered; [1..8] = restrict to particles 1-8 (default for this project)
+PARTICLE_IDS_INCLUDE: Optional[List[int]] = [1, 2, 3, 4, 5, 6, 7, 8]
+
+# Boundary-only kinetics: exclude these particle IDs (retained = 2, 4, 5, 6, 7)
+BOUNDARY_ANALYSIS_EXCLUDE_IDS: List[int] = [1, 3, 8]
+# Common SOC grid size for boundary/full-particle fits
+BOUNDARY_FIT_SOC_GRID_SIZE: int = 51
 
 # Full-field SOC artifact (saved under output_root/intermediate for debugging)
 FULL_FIELD_SOC_FILENAME: str = "soc_full_field_tyx.npy"
