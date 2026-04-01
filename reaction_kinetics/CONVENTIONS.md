@@ -14,6 +14,21 @@
 - **Alignment:** dc_dt_tyx[i] corresponds to the midpoint time `time_mid_s[i] = (time_s[i] + time_s[i+1]) / 2`.
 - All plots and tables that use dc/dt must use the T-1 time axis (time_mid_s), not the T-length SOC time axis.
 
+## x_li and current-map alignment
+
+- `x_li_movie_tyx` has length **T** (same as SOC/s proxy).
+- `dx_li_dt_tyx` has length **T-1** and is aligned to midpoint times.
+- `relative_current_weight_tyx`, `scan_region_allocated_current_a_tyx`, and `scan_region_normalized_current_density_proxy_a_per_cm2_tyx` are all **T-1** quantities.
+- Filenames and labels explicitly include `_T` or `_Tminus1` to avoid ambiguity.
+
+## Scan-region-normalized current convention
+
+- Primary partition uses magnitude: `|dx_li_dt|` (non-negative weights summing to 1 per frame over finite pixels).
+- Normalization is scan-region-wide at each timestep across all finite scanned pixels.
+- If `sum(|dx_li_dt|) == 0` for a frame, weight/allocation/proxy maps are set to NaN for that frame and flagged in summary tables.
+- Allocated current and A/cm² fields are **scan-region normalization proxies** for visualization, not absolute full-cathode local current density.
+- **Per-particle shares** use the same global weights summed only on pixels **exclusively** attributed to that particle: where union masks overlap, **lowest `particle_id` wins**, so shares do not double-count and their sum over particles is **≤ 1**.
+
 ## Coordinates
 
 - **Full-frame:** (x, y) in the 30×30 scan; used in long-form pixel table and geometry.

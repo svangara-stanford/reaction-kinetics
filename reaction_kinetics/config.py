@@ -21,6 +21,16 @@ def get_output_root(override: Optional[str] = None) -> Path:
 # Spatial scale (microns per pixel)
 DX_UM: float = 0.5
 DY_UM: float = 0.5
+PIXEL_AREA_CM2: float = (DX_UM * 1e-4) * (DY_UM * 1e-4)
+
+# Physically grounded stoichiometry/current parameters
+I_TOT_A: float = 219.164e-6
+LI_STOICH_PRISTINE: float = 1.13
+LI_STOICH_CHARGED: float = 0.268
+
+# If sum(|dx_li_dt|) over the partition support is positive but below this absolute
+# threshold, treat the frame as invalid (NaN weights) to avoid normalizing noise.
+SCAN_REGION_SUM_ABS_DX_LI_DT_EPS: float = 1e-14
 
 # Expected full-frame grid
 GRID_NX: int = 30

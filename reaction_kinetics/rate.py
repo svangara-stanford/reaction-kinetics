@@ -83,3 +83,22 @@ def compute_dc_dt(
         dt_s=dt_s,
         smoothing_metadata=meta,
     )
+
+
+def compute_dx_li_dt(
+    x_li_tyx: np.ndarray,
+    time_s: np.ndarray,
+    valid_mask_tyx: Optional[np.ndarray] = None,
+    smooth_window: Optional[int] = None,
+    smooth_poly: int = 2,
+    erode_boundary_px: int = 0,
+) -> RateMaps:
+    """Alias of compute_dc_dt for x_li(t,y,x), preserving T-1 midpoint alignment."""
+    return compute_dc_dt(
+        x_li_tyx,
+        time_s,
+        valid_mask_tyx=valid_mask_tyx,
+        smooth_window=smooth_window,
+        smooth_poly=smooth_poly,
+        erode_boundary_px=erode_boundary_px,
+    )

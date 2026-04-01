@@ -26,6 +26,13 @@ def main() -> int:
     parser.add_argument("--smooth-window", type=int, default=DEFAULT_SMOOTH_WINDOW, help="Savitzky-Golay window (odd)")
     parser.add_argument("--erode-boundary-px", type=int, default=DEFAULT_ERODE_BOUNDARY_PX, help="Erode boundary pixels")
     parser.add_argument("--particle-ids", type=int, nargs="*", default=None, metavar="ID", help="Restrict to these particle IDs (e.g. 1 2 3 4 5 6 7 8)")
+    parser.add_argument(
+        "--analysis-field",
+        type=str,
+        default="soc",
+        choices=["soc", "x_li"],
+        help="Primary analysis variable for descriptive/boundary plotting (default: soc).",
+    )
     args = parser.parse_args()
 
     data_root = get_data_root(args.data_root)
@@ -40,6 +47,7 @@ def main() -> int:
         smooth_window=args.smooth_window,
         erode_boundary_px=args.erode_boundary_px,
         particle_ids_include=args.particle_ids if args.particle_ids else None,
+        analysis_field=args.analysis_field,
     )
 
     print("Run summary:")
